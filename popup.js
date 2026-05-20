@@ -11,7 +11,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Use the PDF's URL as the save key
     const storageKey = 'pdf_scan_' + tab.url;
     
-    chrome.storage.local.get([storageKey], (data) => {
+    chrome.storage.session.get([storageKey], (data) => {
         if (data[storageKey]) {
             // We found saved results! Hide the scan button and display them immediately.
             document.getElementById('scan-btn').style.display = 'none';
@@ -63,14 +63,22 @@ async function analyzePDF(url) {
         if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
 
         const arrayBuffer = await response.arrayBuffer();
+        const pdfData = new Uint8Array(arrayBuffer);
         statusDiv.innerText = "Parsing PDF structure...";
 
         // 2. Load into PDF.js
-        const loadingTask = pdfjsLib.getDocument(url);
+        const loadingTask = pdfjsLib.getDocument(
+            {
+                data: pdfData
+            }
+        );
         const pdf = await loadingTask.promise;
 
         let colorPages = [];
         let bwPages = [];
+
+        const canvas = document.createElement('canvas');
+        const context = canvas.getContext('2d', { willReadFrequently: true });
 
         // 3. Loop through and render pages
         for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
@@ -81,8 +89,6 @@ async function analyzePDF(url) {
             // OPTIMIZATION: Render at 20% size for a massive performance boost
             const viewport = page.getViewport({ scale: 0.2 });
 
-            const canvas = document.createElement('canvas');
-            const context = canvas.getContext('2d', { willReadFrequently: true });
             canvas.height = viewport.height;
             canvas.width = viewport.width;
 
@@ -98,10 +104,13 @@ async function analyzePDF(url) {
 
             //Prevenet UI freezing by yielding back to the event loop after each page
             await new Promise(resolve => setTimeout(resolve, 0));
+            page.cleanup();
+            canvas.width = 0;
+            canvas.height = 0;
         }
 
         const storageKey = 'pdf_scan_' + url;
-        await chrome.storage.local.set({
+        await chrome.storage.session.set({
             [storageKey]: {
                 colorPages: colorPages,
                 bwPages: bwPages,
@@ -190,28 +199,66 @@ function renderResults(colorPages, bwPages, numPages) {
 }
 
 function checkForColor(context, width, height) {
-    const imageData = context.getImageData(0, 0, width, height);
-    const data = imageData.data;
-    const threshold = 15; // Tolerance for compression artifacts
+    const data = context.getImageData(0, 0, width, height).data;
 
-    // OPTIMIZATION: Check 1 in every 10 pixels to speed up the loop
+    const threshold = 15;
     const pixelSkip = 10;
-    const step = 4 * pixelSkip;
+    const step = pixelSkip * 4;
+
+    let colorCount = 0;
+    let total = 0;
+
+    // Early-exit threshold:
+    // if enough color pixels are found,
+    // stop scanning immediately
+    const earlyExitRatio = 0.01;
+
+    // Approximate total sampled pixels
+    const estimatedSamples = data.length / step;
+    const requiredColorPixels = estimatedSamples * earlyExitRatio;
 
     for (let i = 0; i < data.length; i += step) {
+
         const r = data[i];
         const g = data[i + 1];
         const b = data[i + 2];
 
-        // Check if RGB values differ significantly
-        if (Math.abs(r - g) > threshold ||
-            Math.abs(r - b) > threshold ||
-            Math.abs(g - b) > threshold) {
+        // Skip transparent pixels
+        if (data[i + 3] < 10) continue;
 
-            return true; // Stop immediately upon finding color
+        // Fast max/min calculation (faster than Math.max/min)
+        let max = r;
+        let min = r;
+
+        if (g > max) max = g;
+        if (b > max) max = b;
+
+        if (g < min) min = g;
+        if (b < min) min = b;
+
+        const diff = max - min;
+
+        // Fast rejection of grayscale pixels
+        if (diff < 3) continue;
+
+        // Skip near-white pixels
+        if (min > 245) continue;
+
+        total++;
+
+        // Color detection
+        if (diff > threshold) {
+            colorCount++;
+
+            // Early exit for obvious color pages
+            if (colorCount >= requiredColorPixels) {
+                return true;
+            }
         }
     }
-    return false;
+
+    // Final ratio check
+    return total > 0 && (colorCount / total) > earlyExitRatio;
 }
 
 function formatPageRanges(pages) {
