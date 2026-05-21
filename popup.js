@@ -10,13 +10,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Use the PDF's URL as the save key
     const storageKey = 'pdf_scan_' + tab.url;
-    
+
     chrome.storage.session.get([storageKey], (data) => {
         if (data[storageKey]) {
             // We found saved results! Hide the scan button and display them immediately.
             document.getElementById('scan-btn').style.display = 'none';
             document.getElementById('status').innerText = "Results loaded from memory.";
-            
+
             // Pass the saved data into our display function
             renderResults(data[storageKey].colorPages, data[storageKey].bwPages, data[storageKey].numPages);
         }
@@ -53,18 +53,46 @@ document.getElementById('scan-btn').addEventListener('click', async () => {
     }
 });
 
-const scannerWorker = new Worker('./scannerWorker.js');
+const cpuCount = navigator.hardwareConcurrency || 4;
+
+const workerCount = Math.min(
+    Math.max(2, cpuCount / 2),
+    6
+);
+
+const scannerWorkers = [];
+
+for (let i = 0; i < workerCount; i++) {
+    scannerWorkers.push(
+        new Worker('./scannerWorker.js')
+    );
+}
+
+let nextWorker = 0;
 
 function checkColorWithWorker(imageData, width, height) {
     return new Promise((resolve) => {
-        scannerWorker.onmessage = (event) => {
-            resolve(event.data);
+        const worker = scannerWorkers[nextWorker];
+        nextWorker = (nextWorker + 1) % scannerWorkers.length;
+
+        // Generate a unique ID for this specific page scan
+        const messageId = Math.random().toString(36).substring(2, 15);
+
+        const handleMessage = (event) => {
+            // Only resolve if this worker message belongs to this specific promise
+            if (event.data.messageId === messageId) {
+                worker.removeEventListener('message', handleMessage);
+                resolve(event.data.isColor);
+            }
         };
 
-        scannerWorker.postMessage(
-            { buffer: imageData.data.buffer, width: width,height: height },
-            [imageData.data.buffer]
-        );
+        worker.addEventListener('message', handleMessage);
+        worker.postMessage({
+            buffer: imageData.data.buffer,
+            width: width,
+            height: height,
+            messageId: messageId 
+        });
     });
 }
 
@@ -73,7 +101,6 @@ async function analyzePDF(url) {
     const resultsDiv = document.getElementById('results');
 
     try {
-        // 1. Fetch the PDF. <all_urls> in manifest allows this to bypass CORS.
         const response = await fetch(url);
         if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
 
@@ -81,26 +108,21 @@ async function analyzePDF(url) {
         const pdfData = new Uint8Array(arrayBuffer);
         statusDiv.innerText = "Parsing PDF structure...";
 
-        // 2. Load into PDF.js
-        const loadingTask = pdfjsLib.getDocument(
-            {
-                data: pdfData
-            }
-        );
+        const loadingTask = pdfjsLib.getDocument({ data: pdfData });
         const pdf = await loadingTask.promise;
 
         let colorPages = [];
         let bwPages = [];
+        
+        const scanPromises = []; 
 
         const canvas = document.createElement('canvas');
         const context = canvas.getContext('2d', { willReadFrequently: true });
 
-        // 3. Loop through and render pages
         for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
             statusDiv.innerText = `Scanning page ${pageNum} of ${pdf.numPages}...`;
 
             const page = await pdf.getPage(pageNum);
-
             const viewport = page.getViewport({ scale: 0.2 });
 
             canvas.height = viewport.height;
@@ -109,20 +131,29 @@ async function analyzePDF(url) {
             await page.render({ canvasContext: context, viewport: viewport }).promise;
 
             const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-            const isColor = await checkColorWithWorker(imageData, canvas.width, canvas.height);
-            
-            if (isColor) {
-                colorPages.push(pageNum);
-            }
-            else {
-                bwPages.push(pageNum);
-            }
 
-            //Prevenet UI freezing by yielding back to the event loop after each page
+            const promise = checkColorWithWorker(imageData, canvas.width, canvas.height)
+                .then(isColor => ({
+                    pageNum: pageNum,
+                    isColor: isColor
+                }));
+
+            scanPromises.push(promise);
+
             await new Promise(resolve => setTimeout(resolve, 0));
             page.cleanup();
-            canvas.width = 0;
-            canvas.height = 0;
+            context.clearRect(0, 0, canvas.width, canvas.height);
+        }
+
+        // Wait for all workers to finish their math
+        const results = await Promise.all(scanPromises);
+        
+        for (const result of results) {
+            if (result.isColor) {
+                colorPages.push(result.pageNum);
+            } else {
+                bwPages.push(result.pageNum);
+            }
         }
 
         const storageKey = 'pdf_scan_' + url;
@@ -151,7 +182,7 @@ function renderResults(colorPages, bwPages, numPages) {
 
     statusDiv.innerText = "Scan Complete!";
 
-    // Format both lists using the helper function we made earlier
+    // Format both lists using the helper function
     const colorString = formatPageRanges(colorPages);
     const bwString = formatPageRanges(bwPages);
 
