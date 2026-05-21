@@ -53,6 +53,21 @@ document.getElementById('scan-btn').addEventListener('click', async () => {
     }
 });
 
+const scannerWorker = new Worker('./scannerWorker.js');
+
+function checkColorWithWorker(imageData, width, height) {
+    return new Promise((resolve) => {
+        scannerWorker.onmessage = (event) => {
+            resolve(event.data);
+        };
+
+        scannerWorker.postMessage(
+            { buffer: imageData.data.buffer, width: width,height: height },
+            [imageData.data.buffer]
+        );
+    });
+}
+
 async function analyzePDF(url) {
     const statusDiv = document.getElementById('status');
     const resultsDiv = document.getElementById('results');
@@ -86,7 +101,6 @@ async function analyzePDF(url) {
 
             const page = await pdf.getPage(pageNum);
 
-            // OPTIMIZATION: Render at 20% size for a massive performance boost
             const viewport = page.getViewport({ scale: 0.2 });
 
             canvas.height = viewport.height;
@@ -94,8 +108,10 @@ async function analyzePDF(url) {
 
             await page.render({ canvasContext: context, viewport: viewport }).promise;
 
-            // 4. Check the canvas for color pixels
-            if (checkForColor(context, canvas.width, canvas.height)) {
+            const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+            const isColor = await checkColorWithWorker(imageData, canvas.width, canvas.height);
+            
+            if (isColor) {
                 colorPages.push(pageNum);
             }
             else {
@@ -196,69 +212,6 @@ function renderResults(colorPages, bwPages, numPages) {
         });
     };
 
-}
-
-function checkForColor(context, width, height) {
-    const data = context.getImageData(0, 0, width, height).data;
-
-    const threshold = 15;
-    const pixelSkip = 10;
-    const step = pixelSkip * 4;
-
-    let colorCount = 0;
-    let total = 0;
-
-    // Early-exit threshold:
-    // if enough color pixels are found,
-    // stop scanning immediately
-    const earlyExitRatio = 0.01;
-
-    // Approximate total sampled pixels
-    const estimatedSamples = data.length / step;
-    const requiredColorPixels = estimatedSamples * earlyExitRatio;
-
-    for (let i = 0; i < data.length; i += step) {
-
-        const r = data[i];
-        const g = data[i + 1];
-        const b = data[i + 2];
-
-        // Skip transparent pixels
-        if (data[i + 3] < 10) continue;
-
-        // Fast max/min calculation (faster than Math.max/min)
-        let max = r;
-        let min = r;
-
-        if (g > max) max = g;
-        if (b > max) max = b;
-
-        if (g < min) min = g;
-        if (b < min) min = b;
-
-        const diff = max - min;
-
-        // Fast rejection of grayscale pixels
-        if (diff < 3) continue;
-
-        // Skip near-white pixels
-        if (min > 245) continue;
-
-        total++;
-
-        // Color detection
-        if (diff > threshold) {
-            colorCount++;
-
-            // Early exit for obvious color pages
-            if (colorCount >= requiredColorPixels) {
-                return true;
-            }
-        }
-    }
-
-    // Final ratio check
-    return total > 0 && (colorCount / total) > earlyExitRatio;
 }
 
 function formatPageRanges(pages) {
