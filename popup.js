@@ -1,7 +1,7 @@
-import * as pdfjsLib from './lib/pdf.mjs';
+import { getDocument,GlobalWorkerOptions } from './lib/pdf.min.mjs';
 
 // Tell PDF.js where to find the worker file
-pdfjsLib.GlobalWorkerOptions.workerSrc = './lib/pdf.worker.mjs';
+GlobalWorkerOptions.workerSrc = './lib/pdf.worker.min.mjs';
 
 //Check Memory for existing results on page load
 document.addEventListener('DOMContentLoaded', async () => {
@@ -108,7 +108,7 @@ async function analyzePDF(url) {
         const pdfData = new Uint8Array(arrayBuffer);
         statusDiv.innerText = "Parsing PDF structure...";
 
-        const loadingTask = pdfjsLib.getDocument({ data: pdfData });
+        const loadingTask = getDocument({ data: pdfData });
         const pdf = await loadingTask.promise;
 
         let colorPages = [];

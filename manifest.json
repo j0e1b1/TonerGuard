@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "PDF Color Detector",
+  "name": "TonerGuard: PDF Color Detector",
   "version": "1.0",
-  "description": "Detects which pages in a PDF contain color.",
+  "description": "TonerGuard: PDF Color Detector",
   "permissions": [
     "activeTab",
     "storage"
@@ -12,6 +12,16 @@
   ],
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Scan PDF for Color"
+    "default_title": "Scans PDF for Color Pages",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"  
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
   }
 }
