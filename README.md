@@ -23,3 +23,6 @@ To install this extension directly from the source code:
 TonerGuard is built with Vanilla JavaScript (ES Modules) and Manifest V3, focusing heavily on performance and memory management:  
 - **Worker Pool Concurrency:** The main thread dynamically spawns a pool of scannerWorker.js instances based on navigator.hardwareConcurrency. Pages are rendered asynchronously and distributed across available CPU cores.  
 - **Optimized Pixel Skipping:** The background algorithm uses a highly tuned pixel-skipping threshold that ignores transparent watermarks and compression artifacts to eliminate false positives.  
+<img width="1920" height="1048" alt="Screenshot From 2026-05-24 14-53-39" src="https://github.com/user-attachments/assets/359fb9e4-c857-41c1-912c-1a3dc5cbe2aa" />
+<img width="1920" height="1048" alt="Screenshot From 2026-05-24 14-53-50" src="https://github.com/user-attachments/assets/f68434a6-cb20-4955-8384-ef533d6e0bcb" />
+<img width="1920" height="1048" alt="Screenshot From 2026-05-29 23-54-38" src="https://github.com/user-attachments/assets/33deb6b0-c48a-4ef9-a522-fb658db3f704" />
