@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "TonerGuard: PDF Color Detector",
-  "version": "1.0",
-  "description": "TonerGuard: PDF Color Detector",
+  "version": "1.1",
+  "description": "Optimise Print Cost with Automated PDF Colour Detection",
   "permissions": [
     "activeTab",
     "storage"

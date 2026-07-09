@@ -15,8 +15,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (data[storageKey]) {
             // We found saved results! Hide the scan button and display them immediately.
             document.getElementById('scan-btn').style.display = 'none';
-            document.getElementById('status').innerText = "Results loaded from memory.";
-
             // Pass the saved data into our display function
             renderResults(data[storageKey].colorPages, data[storageKey].bwPages, data[storageKey].numPages);
         }
@@ -37,10 +35,35 @@ document.getElementById('scan-btn').addEventListener('click', async () => {
     try {
         let [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
-        // Ensure the URL exists and is a PDF
-        if (tab && tab.url && tab.url.split('?')[0].toLowerCase().endsWith('.pdf')) {
+        let targetUrl = tab.url
+        let isPdfStream = false
+
+        if (targetUrl.startsWith('file://')) {
+            // Check if Chrome allows file access
+            const hasFileAccess = await new Promise(resolve => {
+                chrome.extension.isAllowedFileSchemeAccess(resolve);
+            });
+            if (!hasFileAccess) {
+                statusDiv.innerHTML = `
+                    <span style="color: red;">Local file access denied.</span><br>
+                    Please enable <b>"Allow access to file URLs"</b> in the extension settings to scan this file.
+                `;
+                return
+            }
+        }
+
+        if (targetUrl.includes('googleusercontent.com') && targetUrl.includes('/pdf/')) {
+            isPdfStream = true;
             statusDiv.innerText = "Downloading PDF...";
-            await analyzePDF(tab.url);
+        }
+        
+        // Ensure the URL exists and is a PDF
+        else if (tab && targetUrl && targetUrl.split('?')[0].toLowerCase().endsWith('.pdf')) {
+            isPdfStream = true
+        }
+
+        if(isPdfStream){
+            await analyzePDF(targetUrl);
         } else {
             statusDiv.innerText = "Error: The active tab does not appear to be a PDF file.";
         }
@@ -101,7 +124,12 @@ async function analyzePDF(url) {
     const resultsDiv = document.getElementById('results');
 
     try {
-        const response = await fetch(url);
+        const response = await fetch(url, {
+            credentials: 'include',
+            headers: {
+                'Accept': 'application/pdf'
+            }
+        });
         if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
 
         const arrayBuffer = await response.arrayBuffer();
