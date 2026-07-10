@@ -76,25 +76,22 @@ document.getElementById('scan-btn').addEventListener('click', async () => {
     }
 });
 
-const cpuCount = navigator.hardwareConcurrency || 4;
-
-const workerCount = Math.min(
-    Math.max(2, cpuCount / 2),
-    6
-);
-
-const scannerWorkers = [];
-
-for (let i = 0; i < workerCount; i++) {
-    scannerWorkers.push(
-        new Worker('./scannerWorker.js')
-    );
-}
-
-let nextWorker = 0;
-
 function checkColorWithWorker(imageData, width, height) {
     return new Promise((resolve) => {
+        const cpuCount = navigator.hardwareConcurrency || 4;
+        const workerCount = Math.min(
+            Math.max(2, cpuCount / 2),
+            6
+        );
+        const scannerWorkers = [];
+
+        for (let i = 0; i < workerCount; i++) {
+            scannerWorkers.push(
+                new Worker('./scannerWorker.js')
+            );
+        }
+
+        let nextWorker = 0;
         const worker = scannerWorkers[nextWorker];
         nextWorker = (nextWorker + 1) % scannerWorkers.length;
 
