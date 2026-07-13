@@ -1,7 +1,9 @@
-import { getDocument,GlobalWorkerOptions } from './lib/pdf.min.mjs';
+import { getDocument,GlobalWorkerOptions } from './lib/pdf.mjs';
 
 // Tell PDF.js where to find the worker file
-GlobalWorkerOptions.workerSrc = './lib/pdf.worker.min.mjs';
+GlobalWorkerOptions.workerSrc = new URL(
+'./lib/pdf.worker.mjs',import.meta.url
+).toString();
 
 //Check Memory for existing results on page load
 document.addEventListener('DOMContentLoaded', async () => {
@@ -87,7 +89,7 @@ function checkColorWithWorker(imageData, width, height) {
 
         for (let i = 0; i < workerCount; i++) {
             scannerWorkers.push(
-                new Worker('./scannerWorker.js')
+                new Worker(new URL('./scannerWorker.js',import.meta.url),{type: 'module'})
             );
         }
 
