@@ -37,6 +37,12 @@ button:disabled {
     background-color: #ccc;
     cursor: not-allowed;
 }
+#browse-btn {
+    background-color: #5f6368;
+}
+#browse-btn:hover {
+    background-color: #494c50;
+}
 #status {
     font-size: 13px;
     font-weight: bold;

@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>TonerGuard Viewer</title>
+    <link rel="stylesheet" href="viewer.css">
+</head>
+<body>
+    <div id="picker">
+        <button id="browse-btn">Choose a PDF to scan</button>
+        <p>or drop a PDF anywhere on this page</p>
+    </div>
+    <input id="file-input" type="file" accept="application/pdf,.pdf" hidden>
+    <embed id="pdf-embed" type="application/pdf" hidden>
+
+    <script type="module" src="viewer.js"></script>
+</body>
+</html>

@@ -1,13 +1,17 @@
-import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist';
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import { scanPdf, formatPageRanges } from './scanner.js';
 
-// Tell PDF.js where to find the worker file
-GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+const viewerUrl = chrome.runtime.getURL('viewer.html');
 
-//Check Memory for existing results on page load
+// Show the right state for the active tab when the popup opens
 document.addEventListener('DOMContentLoaded', async () => {
     let [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab || !tab.url) return;
+
+    // Our own viewer tab: show the scan state that the viewer publishes
+    if (tab.url.startsWith(viewerUrl)) {
+        showViewerState(tab.id);
+        return;
+    }
 
     // Use the PDF's URL as the save key
     const storageKey = 'pdf_scan_' + tab.url;
@@ -21,6 +25,28 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     });
 });
+
+// Mirror the viewer tab's scan state (progress, then results) and keep it live while the popup is open
+async function showViewerState(tabId) {
+    const stateKey = 'viewer_state_' + tabId;
+    document.getElementById('scan-btn').style.display = 'none';
+
+    const apply = (state) => {
+        const statusDiv = document.getElementById('status');
+        if (!state) {
+            statusDiv.innerText = "Choose a PDF in this tab to scan it.";
+        } else if (state.status === 'done') {
+            renderResults(state.colorPages, state.bwPages, state.numPages);
+        } else {
+            statusDiv.innerText = state.message;
+        }
+    };
+
+    apply((await chrome.storage.session.get(stateKey))[stateKey]);
+    chrome.storage.onChanged.addListener((changes, area) => {
+        if (area === 'session' && changes[stateKey]) apply(changes[stateKey].newValue);
+    });
+}
 
 // Main scan button logic
 document.getElementById('scan-btn').addEventListener('click', async () => {
@@ -76,49 +102,8 @@ document.getElementById('scan-btn').addEventListener('click', async () => {
     }
 });
 
-function createWorkerPool() {
-    const cpuCount = navigator.hardwareConcurrency || 4;
-    const workerCount = Math.min(Math.max(2, Math.floor(cpuCount / 2)), 6);
-    const workers = [];
-    for (let i = 0; i < workerCount; i++) {
-        workers.push(
-            new Worker(new URL('./scannerWorker.js', import.meta.url), { type: 'module' })
-        );
-    }
-    return { workers, next: 0 };
-}
-
-function checkColorWithWorker(pool, imageData, width, height) {
-    return new Promise((resolve, reject) => {
-        // Round-robin across the shared pool
-        const worker = pool.workers[pool.next];
-        pool.next = (pool.next + 1) % pool.workers.length;
-
-        // Generate a unique ID for this specific page scan
-        const messageId = Math.random().toString(36).substring(2, 15);
-
-        const handleMessage = (event) => {
-            // Only resolve if this worker message belongs to this specific promise
-            if (event.data.messageId === messageId) {
-                worker.removeEventListener('message', handleMessage);
-                resolve(event.data.isColor);
-            }
-        };
-
-        worker.addEventListener('message', handleMessage);
-        worker.addEventListener('error', reject, { once: true });
-        worker.postMessage({
-            buffer: imageData.data.buffer,
-            width: width,
-            height: height,
-            messageId: messageId
-        }, [imageData.data.buffer]);
-    });
-}
-
 async function analyzePDF(url) {
     const statusDiv = document.getElementById('status');
-    let pool;
 
     try {
         const response = await fetch(url, {
@@ -129,78 +114,32 @@ async function analyzePDF(url) {
         });
         if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
 
-        const arrayBuffer = await response.arrayBuffer();
-        const pdfData = new Uint8Array(arrayBuffer);
+        const pdfData = new Uint8Array(await response.arrayBuffer());
         statusDiv.innerText = "Parsing PDF structure...";
 
-        const loadingTask = getDocument({ data: pdfData });
-        const pdf = await loadingTask.promise;
-
-        let colorPages = [];
-        let bwPages = [];
-        
-        const scanPromises = [];
-        pool = createWorkerPool();
-
-        const canvas = document.createElement('canvas');
-        const context = canvas.getContext('2d', { willReadFrequently: true });
-
-        for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-            statusDiv.innerText = `Scanning page ${pageNum} of ${pdf.numPages}...`;
-
-            const page = await pdf.getPage(pageNum);
-            const viewport = page.getViewport({ scale: 0.2 });
-
-            canvas.height = viewport.height;
-            canvas.width = viewport.width;
-
-            await page.render({ canvasContext: context, viewport: viewport }).promise;
-
-            const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-
-            const promise = checkColorWithWorker(pool, imageData, canvas.width, canvas.height)
-                .then(isColor => ({
-                    pageNum: pageNum,
-                    isColor: isColor
-                }));
-
-            scanPromises.push(promise);
-
-            await new Promise(resolve => setTimeout(resolve, 0));
-            page.cleanup();
-            context.clearRect(0, 0, canvas.width, canvas.height);
-        }
-
-        // Wait for all workers to finish their math
-        const results = await Promise.all(scanPromises);
-        
-        for (const result of results) {
-            if (result.isColor) {
-                colorPages.push(result.pageNum);
-            } else {
-                bwPages.push(result.pageNum);
-            }
-        }
+        const { colorPages, bwPages, numPages } = await scanPdf(pdfData, (pageNum, total) => {
+            statusDiv.innerText = `Scanning page ${pageNum} of ${total}...`;
+        });
 
         const storageKey = 'pdf_scan_' + url;
         await chrome.storage.session.set({
-            [storageKey]: {
-                colorPages: colorPages,
-                bwPages: bwPages,
-                numPages: pdf.numPages
-            }
+            [storageKey]: { colorPages, bwPages, numPages }
         });
 
         document.getElementById('scan-btn').style.display = 'none';
-        renderResults(colorPages, bwPages, pdf.numPages);
+        renderResults(colorPages, bwPages, numPages);
 
     } catch (error) {
         statusDiv.innerText = "Failed to load/scan PDF. It may be blocked by strict server policies or requires a login.";
         console.error("PDF Scan Error:", error);
-    } finally {
-        if (pool) pool.workers.forEach(w => w.terminate());
     }
 }
+
+// The popup closes as soon as a file dialog takes focus, so the picker lives in the viewer tab
+document.getElementById('browse-btn').addEventListener('click', async () => {
+    await chrome.tabs.create({ url: chrome.runtime.getURL('viewer.html'), active: true });
+    window.close();
+});
 
 function renderResults(colorPages, bwPages, numPages) {
     const statusDiv = document.getElementById('status');
@@ -271,28 +210,4 @@ function renderResults(colorPages, bwPages, numPages) {
         });
     };
 
-}
-
-function formatPageRanges(pages) {
-    if (pages.length === 0) return "";
-
-    let ranges = [];
-    let start = pages[0];
-    let end = pages[0];
-
-    for (let i = 1; i < pages.length; i++) {
-        if (pages[i] === end + 1) {
-            // The number is consecutive, extend the current range
-            end = pages[i];
-        } else {
-            // The sequence broke. Push the previous range and start a new one.
-            ranges.push(start === end ? `${start}` : `${start}-${end}`);
-            start = pages[i];
-            end = pages[i];
-        }
-    }
-    // Push the very last range after the loop finishes
-    ranges.push(start === end ? `${start}` : `${start}-${end}`);
-
-    return ranges.join(', ');
 }
