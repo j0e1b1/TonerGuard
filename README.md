@@ -10,11 +10,11 @@
  **🚀 Installation (Developer Mode)**  
    
  To install this extension directly from the source code:  
-1. Download or clone this repository to your computer.  
+1. Download or clone this repository to your computer, then run `npm install && npm run build`.  
 2. Open Google Chrome (or Edge/Brave) and navigate to chrome://extensions/.  
 3. Toggle **Developer mode** ON in the top right corner.  
 4. Click the **Load unpacked** button in the top left.  
-5. Select the folder containing this repository.  
+5. Select the generated `dist/` folder.  
 6. Pin the extension to your toolbar for easy access!  
  *Note: To scan local files (* *file:///C:/...* *), click "Details" on the extension card and toggle "Allow access to file URLs" ON.*  
  **💡 How to Use**  

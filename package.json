@@ -1,6 +1,6 @@
 {
   "name": "tonerguard",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Optimise Print Cost with Automated PDF Colour Detection",
   "type": "module",
   "scripts": {
@@ -10,5 +10,8 @@
   "devDependencies": {
     "@crxjs/vite-plugin": "^2.7.1",
     "vite": "^8.1.4"
+  },
+  "dependencies": {
+    "pdfjs-dist": "^6.1.200"
   }
 }

@@ -1,9 +1,8 @@
-import { getDocument,GlobalWorkerOptions } from './lib/pdf.mjs';
+import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist';
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
 // Tell PDF.js where to find the worker file
-GlobalWorkerOptions.workerSrc = new URL(
-'./lib/pdf.worker.mjs',import.meta.url
-).toString();
+GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 //Check Memory for existing results on page load
 document.addEventListener('DOMContentLoaded', async () => {
@@ -50,7 +49,7 @@ document.getElementById('scan-btn').addEventListener('click', async () => {
                     <span style="color: red;">Local file access denied.</span><br>
                     Please enable <b>"Allow access to file URLs"</b> in the extension settings to scan this file.
                 `;
-                return
+                return;
             }
         }
 
@@ -72,30 +71,28 @@ document.getElementById('scan-btn').addEventListener('click', async () => {
     } catch (error) {
         statusDiv.innerText = "An error occurred: " + error.message;
         console.error(error);
-        scanBtn.disabled = false;
     } finally {
         scanBtn.disabled = false;
     }
 });
 
-function checkColorWithWorker(imageData, width, height) {
-    return new Promise((resolve) => {
-        const cpuCount = navigator.hardwareConcurrency || 4;
-        const workerCount = Math.min(
-            Math.max(2, cpuCount / 2),
-            6
+function createWorkerPool() {
+    const cpuCount = navigator.hardwareConcurrency || 4;
+    const workerCount = Math.min(Math.max(2, Math.floor(cpuCount / 2)), 6);
+    const workers = [];
+    for (let i = 0; i < workerCount; i++) {
+        workers.push(
+            new Worker(new URL('./scannerWorker.js', import.meta.url), { type: 'module' })
         );
-        const scannerWorkers = [];
+    }
+    return { workers, next: 0 };
+}
 
-        for (let i = 0; i < workerCount; i++) {
-            scannerWorkers.push(
-                new Worker(new URL('./scannerWorker.js',import.meta.url),{type: 'module'})
-            );
-        }
-
-        let nextWorker = 0;
-        const worker = scannerWorkers[nextWorker];
-        nextWorker = (nextWorker + 1) % scannerWorkers.length;
+function checkColorWithWorker(pool, imageData, width, height) {
+    return new Promise((resolve, reject) => {
+        // Round-robin across the shared pool
+        const worker = pool.workers[pool.next];
+        pool.next = (pool.next + 1) % pool.workers.length;
 
         // Generate a unique ID for this specific page scan
         const messageId = Math.random().toString(36).substring(2, 15);
@@ -109,18 +106,19 @@ function checkColorWithWorker(imageData, width, height) {
         };
 
         worker.addEventListener('message', handleMessage);
+        worker.addEventListener('error', reject, { once: true });
         worker.postMessage({
             buffer: imageData.data.buffer,
             width: width,
             height: height,
-            messageId: messageId 
-        });
+            messageId: messageId
+        }, [imageData.data.buffer]);
     });
 }
 
 async function analyzePDF(url) {
     const statusDiv = document.getElementById('status');
-    const resultsDiv = document.getElementById('results');
+    let pool;
 
     try {
         const response = await fetch(url, {
@@ -141,7 +139,8 @@ async function analyzePDF(url) {
         let colorPages = [];
         let bwPages = [];
         
-        const scanPromises = []; 
+        const scanPromises = [];
+        pool = createWorkerPool();
 
         const canvas = document.createElement('canvas');
         const context = canvas.getContext('2d', { willReadFrequently: true });
@@ -159,7 +158,7 @@ async function analyzePDF(url) {
 
             const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
 
-            const promise = checkColorWithWorker(imageData, canvas.width, canvas.height)
+            const promise = checkColorWithWorker(pool, imageData, canvas.width, canvas.height)
                 .then(isColor => ({
                     pageNum: pageNum,
                     isColor: isColor
@@ -198,6 +197,8 @@ async function analyzePDF(url) {
     } catch (error) {
         statusDiv.innerText = "Failed to load/scan PDF. It may be blocked by strict server policies or requires a login.";
         console.error("PDF Scan Error:", error);
+    } finally {
+        if (pool) pool.workers.forEach(w => w.terminate());
     }
 }
 
