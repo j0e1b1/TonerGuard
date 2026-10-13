@@ -4,10 +4,16 @@ const embed = document.getElementById('pdf-embed');
 const picker = document.getElementById('picker');
 const fileInput = document.getElementById('file-input');
 let currentBlobUrl = null;
+let currentFile = null;
 let tabId = null;
 
-// The popup reads this tab's scan state to show progress and results
-const tabReady = chrome.tabs.getCurrent().then(tab => { tabId = tab.id; });
+// The popup reads this tab's scan state to show progress and results.
+// Clear any state left from before a reload, since the file is gone with the page.
+const tabReady = chrome.tabs.getCurrent().then(async tab => {
+    tabId = tab.id;
+    await chrome.storage.session.remove('viewer_state_' + tabId);
+    await chrome.action.setBadgeText({ tabId, text: '' });
+});
 
 async function publish(state, badge) {
     await tabReady;
@@ -38,11 +44,19 @@ window.addEventListener('drop', (e) => {
     if (file) loadAndScan(file);
 });
 
+// The popup's Re-scan button asks this tab to scan its file again, skipping the cache
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.type !== 'rescan' || message.tabId !== tabId) return;
+    sendResponse({ ok: currentFile !== null });
+    if (currentFile) scanFile(currentFile, { useCache: false });
+});
+
 window.addEventListener('beforeunload', () => {
     if (currentBlobUrl) URL.revokeObjectURL(currentBlobUrl);
 });
 
 async function loadAndScan(file) {
+    currentFile = file;
     document.title = `TonerGuard - ${file.name}`;
 
     const bytes = new Uint8Array(await file.arrayBuffer());
@@ -54,18 +68,24 @@ async function loadAndScan(file) {
     embed.hidden = false;
     picker.hidden = true;
 
-    // Cache by file identity so rescanning the same file is instant
+    await scanFile(file, { useCache: true });
+}
+
+async function scanFile(file, { useCache }) {
+    // Cache by file identity so opening the same file again is instant
     const cacheKey = `pdf_scan_local_${file.name}_${file.size}_${file.lastModified}`;
-    const cached = (await chrome.storage.session.get(cacheKey))[cacheKey];
-    if (cached) {
-        await publish({ fileName: file.name, status: 'done', ...cached }, String(cached.colorPages.length));
-        return;
+    if (useCache) {
+        const cached = (await chrome.storage.session.get(cacheKey))[cacheKey];
+        if (cached) {
+            await publish({ fileName: file.name, status: 'done', ...cached }, String(cached.colorPages.length));
+            return;
+        }
     }
 
     try {
         await publish({ fileName: file.name, status: 'scanning', message: 'Parsing PDF structure...' }, '...');
-        // pdf.js may transfer the buffer to its worker, so give it a copy
-        const result = await scanPdf(bytes.slice(), (pageNum, total) => {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const result = await scanPdf(bytes, (pageNum, total) => {
             publish({ fileName: file.name, status: 'scanning', message: `Scanning page ${pageNum} of ${total}...` }, '...');
         });
         await chrome.storage.session.set({ [cacheKey]: result });

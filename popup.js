@@ -1,6 +1,7 @@
 import { scanPdf, formatPageRanges } from './scanner.js';
 
 const viewerUrl = chrome.runtime.getURL('viewer.html');
+let viewerTabId = null;  // set when the popup is opened over our viewer tab
 
 // Show the right state for the active tab when the popup opens
 document.addEventListener('DOMContentLoaded', async () => {
@@ -18,8 +19,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     chrome.storage.session.get([storageKey], (data) => {
         if (data[storageKey]) {
-            // We found saved results! Hide the scan button and display them immediately.
-            document.getElementById('scan-btn').style.display = 'none';
+            // We found saved results! Display them immediately and offer a re-scan.
+            document.getElementById('scan-btn').innerText = "Re-scan PDF";
             // Pass the saved data into our display function
             renderResults(data[storageKey].colorPages, data[storageKey].bwPages, data[storageKey].numPages);
         }
@@ -29,10 +30,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 // Mirror the viewer tab's scan state (progress, then results) and keep it live while the popup is open
 async function showViewerState(tabId) {
     const stateKey = 'viewer_state_' + tabId;
-    document.getElementById('scan-btn').style.display = 'none';
+    const scanBtn = document.getElementById('scan-btn');
+    viewerTabId = tabId;
+    scanBtn.innerText = "Re-scan PDF";
 
     const apply = (state) => {
         const statusDiv = document.getElementById('status');
+        // Re-scan needs a file in the viewer, and is locked while a scan runs
+        scanBtn.style.display = state ? '' : 'none';
+        scanBtn.disabled = state?.status === 'scanning';
         if (!state) {
             statusDiv.innerText = "Choose a PDF in this tab to scan it.";
         } else if (state.status === 'done') {
@@ -57,13 +63,32 @@ document.getElementById('scan-btn').addEventListener('click', async () => {
     // Reset UI state
     scanBtn.disabled = true;
     resultsDiv.style.display = 'none';
+    document.getElementById('copy-btn-color').style.display = 'none';
+    document.getElementById('copy-btn-bw').style.display = 'none';
+
+    // The viewer tab holds the file, so ask it to re-scan; its state updates drive the UI from here
+    if (viewerTabId !== null) {
+        statusDiv.innerText = "Re-scanning...";
+        const response = await chrome.runtime.sendMessage({ type: 'rescan', tabId: viewerTabId }).catch(() => null);
+        if (!response?.ok) {
+            statusDiv.innerText = "Choose the PDF again in this tab to re-scan it.";
+            scanBtn.style.display = 'none';
+        }
+        return;
+    }
+
     statusDiv.innerText = "Checking active tab...";
 
     try {
         let [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
         let targetUrl = tab.url
-        let isPdfStream = false
+
+        // Only fetchable pages can be PDFs; chrome://, about: etc. never are
+        if (!targetUrl || !/^(https?|file):/i.test(targetUrl)) {
+            statusDiv.innerText = "Error: The active tab does not appear to be a PDF file.";
+            return;
+        }
 
         if (targetUrl.startsWith('file://')) {
             // Check if Chrome allows file access
@@ -79,21 +104,9 @@ document.getElementById('scan-btn').addEventListener('click', async () => {
             }
         }
 
-        if (targetUrl.includes('googleusercontent.com') && targetUrl.includes('/pdf/')) {
-            isPdfStream = true;
-            statusDiv.innerText = "Downloading PDF...";
-        }
-        
-        // Ensure the URL exists and is a PDF
-        else if (tab && targetUrl && targetUrl.split('?')[0].toLowerCase().endsWith('.pdf')) {
-            isPdfStream = true
-        }
-
-        if(isPdfStream){
-            await analyzePDF(targetUrl);
-        } else {
-            statusDiv.innerText = "Error: The active tab does not appear to be a PDF file.";
-        }
+        // Many PDFs are served from URLs like /download?id=123, so let the file's contents decide
+        statusDiv.innerText = "Downloading PDF...";
+        await analyzePDF(targetUrl);
     } catch (error) {
         statusDiv.innerText = "An error occurred: " + error.message;
         console.error(error);
@@ -115,6 +128,13 @@ async function analyzePDF(url) {
         if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
 
         const pdfData = new Uint8Array(await response.arrayBuffer());
+        if (!hasPdfHeader(pdfData)) {
+            // Being redirected to a web page usually means a sign-in page or an expired link
+            statusDiv.innerText = response.redirected
+                ? "The site sent a web page instead of the PDF. You may have been signed out. Reload the PDF tab and try again."
+                : "Error: The active tab does not appear to be a PDF file.";
+            return;
+        }
         statusDiv.innerText = "Parsing PDF structure...";
 
         const { colorPages, bwPages, numPages } = await scanPdf(pdfData, (pageNum, total) => {
@@ -126,13 +146,20 @@ async function analyzePDF(url) {
             [storageKey]: { colorPages, bwPages, numPages }
         });
 
-        document.getElementById('scan-btn').style.display = 'none';
+        document.getElementById('scan-btn').innerText = "Re-scan PDF";
         renderResults(colorPages, bwPages, numPages);
 
     } catch (error) {
         statusDiv.innerText = "Failed to load/scan PDF. It may be blocked by strict server policies or requires a login.";
         console.error("PDF Scan Error:", error);
     }
+}
+
+// A PDF starts with "%PDF-", which the spec allows anywhere in the first 1024 bytes.
+// Content-Type isn't trusted because servers often send application/octet-stream.
+function hasPdfHeader(bytes) {
+    const head = new TextDecoder('latin1').decode(bytes.subarray(0, 1024));
+    return head.includes('%PDF-');
 }
 
 // The popup closes as soon as a file dialog takes focus, so the picker lives in the viewer tab
