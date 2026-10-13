@@ -67,3 +67,6 @@ button:disabled {
 #copy-btn-color.active, #copy-btn-bw.active {
     background-color: #24763a;
 }
+#status.error {
+    color: #d93025;
+}

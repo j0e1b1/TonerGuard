@@ -1,4 +1,4 @@
-import { scanPdf } from './scanner.js';
+import { scanPdf, describeScanError, hasPdfHeader } from './scanner.js';
 
 const embed = document.getElementById('pdf-embed');
 const picker = document.getElementById('picker');
@@ -83,8 +83,12 @@ async function scanFile(file, { useCache }) {
     }
 
     try {
-        await publish({ fileName: file.name, status: 'scanning', message: 'Parsing PDF structure...' }, '...');
+        await publish({ fileName: file.name, status: 'scanning', message: 'Reading PDF...' }, '...');
         const bytes = new Uint8Array(await file.arrayBuffer());
+        if (!hasPdfHeader(bytes)) {
+            await publish({ fileName: file.name, status: 'error', message: "This file isn't a PDF. Choose a PDF file to scan." }, '!');
+            return;
+        }
         const result = await scanPdf(bytes, (pageNum, total) => {
             publish({ fileName: file.name, status: 'scanning', message: `Scanning page ${pageNum} of ${total}...` }, '...');
         });
@@ -95,7 +99,7 @@ async function scanFile(file, { useCache }) {
         await publish({
             fileName: file.name,
             status: 'error',
-            message: "Failed to scan PDF. The file may be corrupt, encrypted, or not a PDF."
+            message: describeScanError(error)
         }, '!');
     }
 }

@@ -102,6 +102,25 @@ export async function scanPdf(pdfData, onProgress) {
     }
 }
 
+// A PDF starts with "%PDF-", which the spec allows anywhere in the first 1024 bytes.
+// Content-Type isn't trusted because servers often send application/octet-stream.
+export function hasPdfHeader(bytes) {
+    const head = new TextDecoder('latin1').decode(bytes.subarray(0, 1024));
+    return head.includes('%PDF-');
+}
+
+// Turn a scanPdf failure into a message the user can act on
+export function describeScanError(error) {
+    switch (error?.name) {
+        case 'PasswordException':
+            return "This PDF is password-protected, so TonerGuard can't scan it yet.";
+        case 'InvalidPDFException':
+            return "This PDF seems to be damaged, so it can't be read. Try downloading it again.";
+        default:
+            return "Something went wrong while scanning. Please try again.";
+    }
+}
+
 export function formatPageRanges(pages) {
     if (pages.length === 0) return "";
 

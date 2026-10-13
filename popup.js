@@ -1,7 +1,14 @@
-import { scanPdf, formatPageRanges } from './scanner.js';
+import { scanPdf, formatPageRanges, hasPdfHeader, describeScanError } from './scanner.js';
 
 const viewerUrl = chrome.runtime.getURL('viewer.html');
 let viewerTabId = null;  // set when the popup is opened over our viewer tab
+
+// Show a status line, in red when it's an error
+function setStatus(text, isError = false) {
+    const statusDiv = document.getElementById('status');
+    statusDiv.innerText = text;
+    statusDiv.classList.toggle('error', isError);
+}
 
 // Show the right state for the active tab when the popup opens
 document.addEventListener('DOMContentLoaded', async () => {
@@ -35,16 +42,15 @@ async function showViewerState(tabId) {
     scanBtn.innerText = "Re-scan PDF";
 
     const apply = (state) => {
-        const statusDiv = document.getElementById('status');
         // Re-scan needs a file in the viewer, and is locked while a scan runs
         scanBtn.style.display = state ? '' : 'none';
         scanBtn.disabled = state?.status === 'scanning';
         if (!state) {
-            statusDiv.innerText = "Choose a PDF in this tab to scan it.";
+            setStatus("Choose a PDF in this tab to scan it.");
         } else if (state.status === 'done') {
             renderResults(state.colorPages, state.bwPages, state.numPages);
         } else {
-            statusDiv.innerText = state.message;
+            setStatus(state.message, state.status === 'error');
         }
     };
 
@@ -57,7 +63,6 @@ async function showViewerState(tabId) {
 // Main scan button logic
 document.getElementById('scan-btn').addEventListener('click', async () => {
     const scanBtn = document.getElementById('scan-btn');
-    const statusDiv = document.getElementById('status');
     const resultsDiv = document.getElementById('results');
 
     // Reset UI state
@@ -68,16 +73,16 @@ document.getElementById('scan-btn').addEventListener('click', async () => {
 
     // The viewer tab holds the file, so ask it to re-scan; its state updates drive the UI from here
     if (viewerTabId !== null) {
-        statusDiv.innerText = "Re-scanning...";
+        setStatus("Re-scanning...");
         const response = await chrome.runtime.sendMessage({ type: 'rescan', tabId: viewerTabId }).catch(() => null);
         if (!response?.ok) {
-            statusDiv.innerText = "Choose the PDF again in this tab to re-scan it.";
+            setStatus("Choose the PDF again to re-scan it.", true);
             scanBtn.style.display = 'none';
         }
         return;
     }
 
-    statusDiv.innerText = "Checking active tab...";
+    setStatus("Checking active tab...");
 
     try {
         let [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -86,7 +91,7 @@ document.getElementById('scan-btn').addEventListener('click', async () => {
 
         // Only fetchable pages can be PDFs; chrome://, about: etc. never are
         if (!targetUrl || !/^(https?|file):/i.test(targetUrl)) {
-            statusDiv.innerText = "Error: The active tab does not appear to be a PDF file.";
+            setStatus("This tab doesn't have a PDF open. Open one here, or use Browse Local File to choose one from your computer.", true);
             return;
         }
 
@@ -96,19 +101,16 @@ document.getElementById('scan-btn').addEventListener('click', async () => {
                 chrome.extension.isAllowedFileSchemeAccess(resolve);
             });
             if (!hasFileAccess) {
-                statusDiv.innerHTML = `
-                    <span style="color: red;">Local file access denied.</span><br>
-                    Please enable <b>"Allow access to file URLs"</b> in the extension settings to scan this file.
-                `;
+                setStatus("To scan PDFs saved on your computer, turn on \"Allow access to file URLs\" for TonerGuard in Chrome's extension settings. Or use Browse Local File instead.", true);
                 return;
             }
         }
 
         // Many PDFs are served from URLs like /download?id=123, so let the file's contents decide
-        statusDiv.innerText = "Downloading PDF...";
+        setStatus("Downloading PDF...");
         await analyzePDF(targetUrl);
     } catch (error) {
-        statusDiv.innerText = "An error occurred: " + error.message;
+        setStatus("Something went wrong. Reload the tab and try again.", true);
         console.error(error);
     } finally {
         scanBtn.disabled = false;
@@ -116,29 +118,38 @@ document.getElementById('scan-btn').addEventListener('click', async () => {
 });
 
 async function analyzePDF(url) {
-    const statusDiv = document.getElementById('status');
-
+    let response;
     try {
-        const response = await fetch(url, {
+        response = await fetch(url, {
             credentials: 'include',
             headers: {
                 'Accept': 'application/pdf'
             }
         });
-        if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
+    } catch (error) {
+        // fetch only rejects when the request never got an answer
+        setStatus("Couldn't download the PDF. Check your internet connection and try again.", true);
+        console.error("PDF Download Error:", error);
+        return;
+    }
+    if (!response.ok) {
+        setStatus(describeHttpError(response.status), true);
+        return;
+    }
 
+    try {
         const pdfData = new Uint8Array(await response.arrayBuffer());
         if (!hasPdfHeader(pdfData)) {
             // Being redirected to a web page usually means a sign-in page or an expired link
-            statusDiv.innerText = response.redirected
-                ? "The site sent a web page instead of the PDF. You may have been signed out. Reload the PDF tab and try again."
-                : "Error: The active tab does not appear to be a PDF file.";
+            setStatus(response.redirected
+                ? "The site showed a web page instead of the PDF. You may have been signed out. Reload the tab and try again."
+                : "This tab doesn't have a PDF open. Open one here, or use Browse Local File to choose one from your computer.", true);
             return;
         }
-        statusDiv.innerText = "Parsing PDF structure...";
+        setStatus("Reading PDF...");
 
         const { colorPages, bwPages, numPages } = await scanPdf(pdfData, (pageNum, total) => {
-            statusDiv.innerText = `Scanning page ${pageNum} of ${total}...`;
+            setStatus(`Scanning page ${pageNum} of ${total}...`);
         });
 
         const storageKey = 'pdf_scan_' + url;
@@ -150,16 +161,22 @@ async function analyzePDF(url) {
         renderResults(colorPages, bwPages, numPages);
 
     } catch (error) {
-        statusDiv.innerText = "Failed to load/scan PDF. It may be blocked by strict server policies or requires a login.";
+        setStatus(describeScanError(error), true);
         console.error("PDF Scan Error:", error);
     }
 }
 
-// A PDF starts with "%PDF-", which the spec allows anywhere in the first 1024 bytes.
-// Content-Type isn't trusted because servers often send application/octet-stream.
-function hasPdfHeader(bytes) {
-    const head = new TextDecoder('latin1').decode(bytes.subarray(0, 1024));
-    return head.includes('%PDF-');
+function describeHttpError(status) {
+    if (status === 401 || status === 403) {
+        return "This site wouldn't share the PDF. Make sure you're signed in, then reload the tab and try again.";
+    }
+    if (status === 404 || status === 410) {
+        return "This PDF couldn't be found. The link may have expired. Reload the tab or open the PDF again.";
+    }
+    if (status >= 500) {
+        return "The site is having trouble right now. Try again in a moment.";
+    }
+    return "The site wouldn't send the PDF. Reload the tab and try again.";
 }
 
 // The popup closes as soon as a file dialog takes focus, so the picker lives in the viewer tab
@@ -169,12 +186,11 @@ document.getElementById('browse-btn').addEventListener('click', async () => {
 });
 
 function renderResults(colorPages, bwPages, numPages) {
-    const statusDiv = document.getElementById('status');
     const resultsDiv = document.getElementById('results');
     const copyBtnColor = document.getElementById('copy-btn-color');
     const copyBtnBW = document.getElementById('copy-btn-bw');
 
-    statusDiv.innerText = "Scan Complete!";
+    setStatus("Scan complete!");
 
     // Format both lists using the helper function
     const colorString = formatPageRanges(colorPages);
@@ -220,6 +236,7 @@ function renderResults(colorPages, bwPages, numPages) {
                 copyBtnColor.classList.remove('active');
             }, 2000);
         }).catch(err => {
+            setStatus("Couldn't copy the page numbers. Please try again.", true);
             console.error("Failed to copy text: ", err);
         });
     };
@@ -233,6 +250,7 @@ function renderResults(colorPages, bwPages, numPages) {
                 copyBtnBW.classList.remove('active');
             }, 2000);
         }).catch(err => {
+            setStatus("Couldn't copy the page numbers. Please try again.", true);
             console.error("Failed to copy text: ", err);
         });
     };
